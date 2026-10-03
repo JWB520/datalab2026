@@ -152,7 +152,8 @@ unsigned reverse(unsigned v) {
  *   Difficulty: 3
  */
 int logicalShift(int x, int n) {
-    int s=~(((x&0x80000000)>>n)<<1);//人造一个前n-1位为0的掩码
+    int mov=0x80000000;//这里之所以要写成这样，是因为直接用0x~会默认为无符号数
+    int s=~((mov>>n)<<1);//人造一个前n-1位为0的掩码
     return (x>>n)&s;
 }
 
@@ -175,20 +176,20 @@ int leftBitCount(int x) {
 
     b=!!(mark&x1);
     ans=ans+(b<<3);
-    mark=(mark>>8)<<(b<<3);
+    mark=(mark>>4)<<(b<<3);
 
     b=!!(mark&x1);
     ans=ans+(b<<2);
-    mark=(mark>>8)<<(b<<2);
+    mark=(mark>>2)<<(b<<2);
 
     b=!!(mark&x1);
     ans=ans+(b<<1);
-    mark=(mark>>8)<<(b<<1);
+    mark=(mark>>1)<<(b<<1);
 
     b=!!(mark&x1);
     ans=ans+b;
 
-    return 32+~ans+1;
+    return 32+~ans+!(x1);
 }
 
 /*
@@ -199,47 +200,44 @@ int leftBitCount(int x) {
  *   Max ops: 30
  *   Difficulty: 4
  */
-unsigned float_i2f(int i) {
-    unsigned sign = i >> 31;          // 提取符号位
-    unsigned u = (unsigned)i;
+int float_i2f(int x) {
+    int sign;  //这里记录的是符号位
+    int ux;    //这个数用来存储x绝对值的二进制表示
+    int mant;  //这里记录的是规格化的尾数，它的最高位是1，后面跟着23位的尾数
+    int frac;  //规格化尾数中的小数部分
+    int rem;   //四舍五入被丢弃的低8位
+    int e;     //指数
 
-    if (i == 0) return 0;             // 特判 0
-    if (i == 0x80000000) {            // 特判 INT_MIN（-2^31 取反会溢出）
-        return (1u << 31) | (158u << 23);
+    if (x == 0)//特判0
+        return 0;
+
+    sign = x & (1 << 31);
+    ux = x;
+    if (x < 0)
+        ux = -ux;//x的绝对值
+
+    e = 31;
+    mant = ux;
+    while (mant > 0) {//把规格化的尾数移到最高位
+        mant = mant << 1;
+        e = e - 1;
     }
 
-    // 取绝对值
-    if (sign) u = ~u + 1;
+    frac = (mant >> 8) & 0x7FFFFF;//提取小数部分
+    rem = mant & 0xFF;//提取被丢弃的低8位
 
-    // 找最高位1的位置
-    int pos = 31;
-    while (!(u & (1u << pos))) pos--;
+    if (rem + (frac & 1) > 0x80)   /* round to even */
+        frac = frac + 1;
 
-    // 计算指数（偏置值127 + 实际指数pos）
-    unsigned exp = 127 + pos;
-
-    // 把最高位1左移到第31位，方便后面统一处理尾数
-    u <<= (31 - pos);
-
-    // 现在 u 的第31位是隐含的1，第30~8位是尾数的前23位，第7~0位是要丢弃的低位
-    unsigned frac = (u >> 8) & 0x7fffff;  // 取23位尾数
-    unsigned dropped = u & 0xff;          // 被丢弃的8位
-
-    // 向偶数舍入（round to even）
-    if (dropped > 0x80) {                 // 大于一半，向上舍入
-        frac++;
-    } else if (dropped == 0x80) {         // 恰好一半，向偶数舍入
-        if (frac & 1) frac++;             // 尾数最低位是1就+1变偶数
+    if (frac == 0x800000) {        /* rounding carried into exponent */
+        frac = 0;
+        e = e + 1;
     }
 
-    // 舍入后可能进位导致尾数溢出到指数
-    if (frac >> 23) {
-        exp++;
-        frac &= 0x7fffff;
-    }
-
-    return (sign << 31) | (exp << 23) | frac;
+    return sign | ((e + 127) << 23) | frac;
 }
+
+
 /*
  * floatScale2 - Return bit-level equivalent of expression 2*f for
  *   floating point argument f.
@@ -280,28 +278,26 @@ int float64_f2i(unsigned uf1, unsigned uf2) {
     unsigned sign = uf2 >> 31;
     unsigned exp = (uf2 >> 20) & 0x7ff;
     unsigned frac_hi = uf2 & 0xfffff;
-    unsigned exponent;
-    unsigned significand_hi;
-    unsigned magnitude;
+    unsigned exponent, significand_hi, magnitude;
 
-    if (exp == 0x7ff) return 0x80000000u;
-    exponent = exp - 1023;
-    if (exp < 1023) return 0;
-    if (exponent > 31) return 0x80000000u;
-    if (exponent == 31) {
-        if (sign && frac_hi == 0 && uf1 == 0) return 0x80000000u;
-        return 0x80000000u;
-    }
+    if (exp < 1023)                 /* 0、denorm、|f|<1：向零取整为 0 */
+        return 0;
 
-    significand_hi = 0x100000 | frac_hi;
-    if (exponent <= 20) {
+    exponent = exp - 1023;          /* 到这里 exp>=1023，无回绕 */
+
+    if (exponent >= 31)             /* |f|>=2^31 溢出；Inf/NaN(=1024) 也落在这 */
+        return 0x80000000;
+
+    significand_hi = 0x100000 | frac_hi;      /* 补上隐含的 1，21 位 */
+
+    if (exponent <= 20)
         magnitude = significand_hi >> (20 - exponent);
-    } else {
-        unsigned shift = 52 - exponent;
-        magnitude = (significand_hi << (32 - shift)) | (uf1 >> shift);
-    }
-    if (sign) return -((int)magnitude);
-    return (int)magnitude;
+    else
+        magnitude = (significand_hi << (exponent - 20)) | (uf1 >> (52 - exponent));
+
+    if (sign)
+        return ~magnitude + 1;      /* 取负：不用强转、不用一元负号 */
+    return magnitude;
 }
 
 /*
@@ -319,7 +315,8 @@ int float64_f2i(unsigned uf1, unsigned uf2) {
  */
 unsigned floatPower2(int x) {
     if (x < -149) return 0;
-    if (x < -126) return 1u << (x + 149);
-    if (x > 127) return 0x7f800000;
-    return (unsigned)(x + 127) << 23;
+    if (x < -126) return 1 << (x + 149);   /* denorm：第 x+149 位上是 1 */
+    if (x > 127)  return 0x7f800000;       /* +INF */
+    return (x + 127) << 23;                /* norm：阶码字段 = x + 127 */
 }
+
