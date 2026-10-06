@@ -226,15 +226,15 @@ int float_i2f(int x) {
     frac = (mant >> 8) & 0x7FFFFF;//提取小数部分
     rem = mant & 0xFF;//提取被丢弃的低8位
 
-    if (rem + (frac & 1) > 0x80)   /* round to even */
+    if (rem + (frac & 1) > 0x80)   //向偶数位进位
         frac = frac + 1;
 
-    if (frac == 0x800000) {        /* rounding carried into exponent */
+    if (frac == 0x800000) {//如果进位导致指数发生变化，处理这种边界
         frac = 0;
         e = e + 1;
     }
 
-    return sign | ((e + 127) << 23) | frac;
+    return sign | ((e + 127) << 23) | frac;//合成答案
 }
 
 
